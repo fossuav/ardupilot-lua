@@ -20,6 +20,16 @@ local gains_to_tune_selection = "All" -- Default to "All"
 -- # PARAMETER SETUP
 -- ####################
 
+-- Bind a parameter by name, asserting it exists. Wrapping assert in a function
+-- limits it to a single return value, so it is safe as the last entry of a list
+-- constructor -- a bare assert there would also expand its message string into
+-- the list.
+local function bind_param(name)
+    local p = Parameter(name)
+    assert(p, "Failed to find " .. name)
+    return p
+end
+
 -- Group parameters by axis into tables for easier handling.
 -- Added a 'type' field to each gain for easy filtering.
 local axis_gains = {
@@ -46,20 +56,20 @@ local axis_gains = {
 -- Utility parameters grouped by menu area so each sub-menu can save and revert
 -- its own set independently.
 local logging_params = {
-    assert(Parameter('INS_LOG_BAT_CNT'), "Failed to find INS_LOG_BAT_CNT"),
-    assert(Parameter('INS_LOG_BAT_LGCT'), "Failed to find INS_LOG_BAT_LGCT"),
-    assert(Parameter('INS_LOG_BAT_LGIN'), "Failed to find INS_LOG_BAT_LGIN"),
-    assert(Parameter('INS_LOG_BAT_MASK'), "Failed to find INS_LOG_BAT_MASK"),
-    assert(Parameter('INS_LOG_BAT_OPT'), "Failed to find INS_LOG_BAT_OPT"),
-    assert(Parameter('LOG_BITMASK'), "Failed to find LOG_BITMASK"),
-    assert(Parameter('LOG_REPLAY'), "Failed to find LOG_REPLAY"),
-    assert(Parameter('LOG_DISARMED'), "Failed to find LOG_DISARMED"),
+    bind_param('INS_LOG_BAT_CNT'),
+    bind_param('INS_LOG_BAT_LGCT'),
+    bind_param('INS_LOG_BAT_LGIN'),
+    bind_param('INS_LOG_BAT_MASK'),
+    bind_param('INS_LOG_BAT_OPT'),
+    bind_param('LOG_BITMASK'),
+    bind_param('LOG_REPLAY'),
+    bind_param('LOG_DISARMED'),
 }
 local autotune_params = {
-    assert(Parameter('AUTOTUNE_AGGR'), "Failed to find AUTOTUNE_AGGR"),
-    assert(Parameter('AUTOTUNE_AXES'), "Failed to find AUTOTUNE_AXES"),
-    assert(Parameter('AUTOTUNE_MIN_D'), "Failed to find AUTOTUNE_MIN_D"),
-    assert(Parameter('AUTOTUNE_GMBK'), "Failed to find AUTOTUNE_GMBK"),
+    bind_param('AUTOTUNE_AGGR'),
+    bind_param('AUTOTUNE_AXES'),
+    bind_param('AUTOTUNE_MIN_D'),
+    bind_param('AUTOTUNE_GMBK'),
 }
 
 -- Baseline values captured at startup (and after each save) for revert.
