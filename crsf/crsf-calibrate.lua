@@ -17,6 +17,11 @@ local MAV_CMD_DO_CANCEL_MAG_CAL = 42426
 -- This script-local variable tracks the state of the multi-step compass calibration
 local compass_cal_running = false
 
+-- Scheduled reboot time (nil = none). The reboot is delayed so the CRSF response
+-- is sent first; otherwise the TX hangs waiting for a reply that never comes.
+local reboot_time_ms = nil
+local REBOOT_DELAY_MS = 300
+
 -- ####################
 -- # CALLBACK FUNCTIONS
 -- ####################
@@ -127,6 +132,16 @@ local function callback_ahrs_trim(command_action)
     return CRSF_COMMAND_STATUS.READY, "Execute"
 end
 
+--- Schedules a flight controller reboot to apply calibration results.
+local function callback_reboot(command_action)
+    if command_action == CRSF_COMMAND_STATUS.START then
+        gcs:send_text(MAV_SEVERITY.WARNING, "Rebooting...")
+        reboot_time_ms = millis():tofloat() + REBOOT_DELAY_MS
+        return CRSF_COMMAND_STATUS.READY, "Rebooting"
+    end
+    return CRSF_COMMAND_STATUS.READY, "Reboot"
+end
+
 -- ####################
 -- # MENU DEFINITION
 -- ####################
@@ -171,6 +186,12 @@ local menu_definition = {
             type = 'COMMAND',
             name = 'Trim AHRS',
             callback = callback_ahrs_trim
+        },
+        {
+            type = 'COMMAND',
+            name = 'Reboot FC',
+            info = 'Reboot',
+            callback = callback_reboot
         }
     }
 }
@@ -179,6 +200,28 @@ local menu_definition = {
 -- # SCRIPT START
 -- ####################
 
--- Register the menu definition with the helper.
--- This builds the menu and starts the helper's persistent event loop.
-return crsf_helper.register_menu(menu_definition)
+-- Register the menu definition with the helper. This builds the menu and
+-- returns the helper's event loop, which we wrap to service a delayed reboot.
+local crsf_event_handler, crsf_delay = crsf_helper.register_menu(menu_definition)
+if not crsf_event_handler then
+    gcs:send_text(MAV_SEVERITY.ERROR, "Calibrate CRSF menu init failed")
+    return
+end
+
+--- Main loop wrapper that fires a scheduled reboot before CRSF event handling.
+local function main_loop()
+    if reboot_time_ms and millis():tofloat() >= reboot_time_ms then
+        reboot_time_ms = nil
+        vehicle:reboot(false)
+        return  -- FC is rebooting, won't return
+    end
+
+    local next_fn, next_delay = crsf_event_handler()
+    if next_fn then
+        crsf_event_handler = next_fn
+    end
+
+    return main_loop, next_delay or 100
+end
+
+return main_loop, crsf_delay
