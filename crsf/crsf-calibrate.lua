@@ -24,7 +24,8 @@ local compass_cal_running = false
 -- These functions are called by the helper's event loop.
 -- They must return the new status and info text for the command item.
 
---- Handles the multi-step compass calibration logic.
+--- Handles the compass calibration. Backing out of the menu leaves the cal
+--- running (it autosaves) so the progress messages can be watched.
 local function callback_compass_cal(command_action)
     if command_action == CRSF_COMMAND_STATUS.START then
         -- User pressed "Execute"
@@ -53,18 +54,28 @@ local function callback_compass_cal(command_action)
         return CRSF_COMMAND_STATUS.READY, "Execute"
 
     elseif command_action == CRSF_COMMAND_STATUS.CANCEL then
-        -- User pressed "Cancel" (e.g., long-press back button on TX)
-        if compass_cal_running then
-            gcs:run_command_int(MAV_CMD_DO_CANCEL_MAG_CAL, { p3 = 1 })
-            gcs:send_text(MAV_SEVERITY.WARNING, "Calibration cancelled")
-            compass_cal_running = false
-        end
-
-        -- Tell the helper to update the TX UI back to "Execute"
+        -- Backing out of the menu sends CANCEL. Do NOT abort the calibration:
+        -- leaving it running lets the user exit to watch the progress messages,
+        -- and autosave (p3=1 on START) commits the result when it completes.
+        gcs:send_text(MAV_SEVERITY.INFO, "Compass cal still running; autosaves when done")
         return CRSF_COMMAND_STATUS.READY, "Execute"
     end
 
     -- Default fallback
+    return CRSF_COMMAND_STATUS.READY, "Execute"
+end
+
+--- Explicitly cancels a running compass calibration.
+local function callback_cancel_compass_cal(command_action)
+    if command_action == CRSF_COMMAND_STATUS.START then
+        if compass_cal_running then
+            gcs:run_command_int(MAV_CMD_DO_CANCEL_MAG_CAL, { p3 = 1 })
+            gcs:send_text(MAV_SEVERITY.WARNING, "Compass calibration cancelled")
+            compass_cal_running = false
+        else
+            gcs:send_text(MAV_SEVERITY.INFO, "No compass cal running")
+        end
+    end
     return CRSF_COMMAND_STATUS.READY, "Execute"
 end
 
@@ -128,6 +139,11 @@ local menu_definition = {
             name = 'Calibrate Compass',
             callback = callback_compass_cal
             -- info = "Execute" -- This is the default
+        },
+        {
+            type = 'COMMAND',
+            name = 'Cancel Compass Cal',
+            callback = callback_cancel_compass_cal
         },
         {
             type = 'COMMAND',
