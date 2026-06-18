@@ -62,17 +62,22 @@ def sync_directory(connect_str: str, source_dir: str, verbose: bool = False, res
         print(f"Error: Source directory not found at '{source_dir}'")
         sys.exit(1)
 
-    # --- Step 1: Discover all files and their remote paths ---
+    # --- Step 1: Discover Lua files and their remote paths ---
+    # Only source (.lua), precompiled (.luac), and encrypted (.lxa) scripts are
+    # uploaded; the scripting engine ignores everything else, so skip docs,
+    # configs, etc.
     files_to_upload = []
     for dirpath, _, filenames in os.walk(source_dir):
         for filename in filenames:
+            if os.path.splitext(filename)[1].lower() not in ('.lua', '.luac', '.lxa'):
+                continue
             local_path = os.path.join(dirpath, filename)
             relative_path = os.path.relpath(local_path, source_dir)
             remote_path = f"/APM/scripts/{relative_path.replace(os.path.sep, '/')}"
             files_to_upload.append((local_path, remote_path))
 
     if not files_to_upload:
-        print("\nSource directory is empty. No files to upload.")
+        print("\nNo Lua scripts (.lua, .luac or .lxa) found in source directory. Nothing to upload.")
         return
 
     master = None
