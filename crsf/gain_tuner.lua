@@ -1,6 +1,7 @@
 -- gain_tuner.lua
 -- A script to provide a CRSF menu for in-flight PID gain tuning and utility functions.
--- Version 3.2: Removed command confirmation step, customized execution text.
+-- Version 3.3: Per-area Save/Revert so each sub-menu persists independently
+--              (TBS firmware drops to the scripts root when leaving a sub-menu).
 -- Allows for setting key PID gains for an entire axis at once.
 -- Includes Save/Revert, stateful percentage-based adjustments, and utility functions.
 
@@ -42,53 +43,75 @@ local axis_gains = {
     }
 }
 
--- Table of all other utility parameters managed by this script
-local utility_params = {
-    -- Batch Logging
-    {param = assert(Parameter('INS_LOG_BAT_CNT'), "Failed to find INS_LOG_BAT_CNT")},
-    {param = assert(Parameter('INS_LOG_BAT_LGCT'), "Failed to find INS_LOG_BAT_LGCT")},
-    {param = assert(Parameter('INS_LOG_BAT_LGIN'), "Failed to find INS_LOG_BAT_LGIN")},
-    {param = assert(Parameter('INS_LOG_BAT_MASK'), "Failed to find INS_LOG_BAT_MASK")},
-    {param = assert(Parameter('INS_LOG_BAT_OPT'), "Failed to find INS_LOG_BAT_OPT")},
-    -- Logging
-    {param = assert(Parameter('LOG_BITMASK'), "Failed to find LOG_BITMASK")},
-    {param = assert(Parameter('LOG_REPLAY'), "Failed to find LOG_REPLAY")},
-    {param = assert(Parameter('LOG_DISARMED'), "Failed to find LOG_DISARMED")},
-    {param = assert(Parameter('LOG_FILE_DSRMROT'), "Failed to find LOG_FILE_DSRMROT")},
-    -- Autotune
-    {param = assert(Parameter('AUTOTUNE_AGGR'), "Failed to find AUTOTUNE_AGGR")},
-    {param = assert(Parameter('AUTOTUNE_AXES'), "Failed to find AUTOTUNE_AXES")},
-    {param = assert(Parameter('AUTOTUNE_MIN_D'), "Failed to find AUTOTUNE_MIN_D")},
-    {param = assert(Parameter('AUTOTUNE_GMBK'), "Failed to find AUTOTUNE_GMBK")}
+-- Utility parameters grouped by menu area so each sub-menu can save and revert
+-- its own set independently.
+local logging_params = {
+    assert(Parameter('INS_LOG_BAT_CNT'), "Failed to find INS_LOG_BAT_CNT"),
+    assert(Parameter('INS_LOG_BAT_LGCT'), "Failed to find INS_LOG_BAT_LGCT"),
+    assert(Parameter('INS_LOG_BAT_LGIN'), "Failed to find INS_LOG_BAT_LGIN"),
+    assert(Parameter('INS_LOG_BAT_MASK'), "Failed to find INS_LOG_BAT_MASK"),
+    assert(Parameter('INS_LOG_BAT_OPT'), "Failed to find INS_LOG_BAT_OPT"),
+    assert(Parameter('LOG_BITMASK'), "Failed to find LOG_BITMASK"),
+    assert(Parameter('LOG_REPLAY'), "Failed to find LOG_REPLAY"),
+    assert(Parameter('LOG_DISARMED'), "Failed to find LOG_DISARMED"),
+    assert(Parameter('LOG_FILE_DSRMROT'), "Failed to find LOG_FILE_DSRMROT"),
+}
+local autotune_params = {
+    assert(Parameter('AUTOTUNE_AGGR'), "Failed to find AUTOTUNE_AGGR"),
+    assert(Parameter('AUTOTUNE_AXES'), "Failed to find AUTOTUNE_AXES"),
+    assert(Parameter('AUTOTUNE_MIN_D'), "Failed to find AUTOTUNE_MIN_D"),
+    assert(Parameter('AUTOTUNE_GMBK'), "Failed to find AUTOTUNE_GMBK"),
 }
 
--- Table to store the original parameter values on script startup (or after save) for the revert/baseline function
+-- Baseline values captured at startup (and after each save) for revert.
 local original_gains = {}
-local original_utility_values = {}
+local original_logging = {}
+local original_autotune = {}
 
--- Populate the original value tables for all managed parameters.
-local function populate_original_values()
-    -- Populate gains
-    original_gains = {}
+-- Capture the current values of a flat Parameter list as a revert baseline.
+local function capture_baseline(param_list)
+    local baseline = {}
+    for _, p in ipairs(param_list) do
+        table.insert(baseline, {param = p, original_value = p:get()})
+    end
+    return baseline
+end
+
+-- Capture the current gain values, keyed by axis and carrying the gain type.
+local function capture_gains_baseline()
+    local baseline = {}
     for axis_name, gains in pairs(axis_gains) do
-        original_gains[axis_name] = {}
+        baseline[axis_name] = {}
         for _, gain_info in ipairs(gains) do
-            table.insert(original_gains[axis_name], {
+            table.insert(baseline[axis_name], {
                 param = gain_info.param,
                 original_value = gain_info.param:get(),
                 type = gain_info.type -- Carry over the type for filtering
             })
         end
     end
+    return baseline
+end
 
-    -- Populate utility params
-    original_utility_values = {}
-    for _, param_info in ipairs(utility_params) do
-        table.insert(original_utility_values, {
-            param = param_info.param,
-            original_value = param_info.param:get()
-        })
+-- Persist a flat Parameter list to EEPROM at its current value.
+local function save_param_group(param_list)
+    for _, p in ipairs(param_list) do
+        p:set_and_save(p:get())
     end
+end
+
+-- Restore a Parameter list to the values held in its baseline.
+local function revert_param_group(baseline)
+    for _, item in ipairs(baseline) do
+        item.param:set(item.original_value)
+    end
+end
+
+-- Refresh all baselines from the current parameter values.
+local function populate_original_values()
+    original_gains = capture_gains_baseline()
+    original_logging = capture_baseline(logging_params)
+    original_autotune = capture_baseline(autotune_params)
 end
 
 -- Initial population of original values at script start
@@ -190,55 +213,89 @@ local function on_axis_gain_change(axis_name, selection)
     end
 end
 
--- Saves all currently set values to EEPROM and resets the tuning state.
-local function save_all_settings()
-    -- Save gains
-    for _, gains in pairs(axis_gains) do
-        for _, gain_info in ipairs(gains) do
-            local current_value = gain_info.param:get()
-            gain_info.param:set_and_save(current_value)
-        end
-    end
+-- Each menu area saves and reverts its own parameters so the user never has to
+-- climb back to a top-level command. TBS firmware drops to the scripts root when
+-- leaving a sub-menu, which would otherwise strand a single shared save command.
 
-    -- Save utility params
-    for _, param_info in ipairs(utility_params) do
-        local current_value = param_info.param:get()
-        param_info.param:set_and_save(current_value)
-    end
-    gcs:send_text(MAV_SEVERITY.INFO, "All tuned settings have been saved.")
-
-    -- After saving, the new values become the baseline for further tuning.
-    populate_original_values()
-    gcs:send_text(MAV_SEVERITY.INFO, "Tuning baseline reset to new values.")
-
-    -- Manually reset the menu items' internal state to the default value.
+-- Reset the gain selectors back to the "Hold" position.
+local function reset_gain_selectors()
     if roll_gain_item then roll_gain_item.current_idx = default_gain_idx end
     if pitch_gain_item then pitch_gain_item.current_idx = default_gain_idx end
     if yaw_gain_item then yaw_gain_item.current_idx = default_gain_idx end
 end
 
--- Reverts all settings to the values they had when the script was started.
-local function revert_all_settings()
-    -- Revert gains
+-- Gains live at the top level alongside their Save/Revert, so they are not
+-- affected by the sub-menu return bug.
+local function save_gains()
+    for _, gains in pairs(axis_gains) do
+        for _, gain_info in ipairs(gains) do
+            gain_info.param:set_and_save(gain_info.param:get())
+        end
+    end
+    original_gains = capture_gains_baseline() -- saved values become the new baseline
+    reset_gain_selectors()
+    gcs:send_text(MAV_SEVERITY.INFO, "Gains saved.")
+end
+
+local function revert_gains()
     for _, gains in pairs(original_gains) do
         for _, gain_info in ipairs(gains) do
             gain_info.param:set(gain_info.original_value)
         end
     end
+    reset_gain_selectors()
+    gcs:send_text(MAV_SEVERITY.INFO, "Gains reverted.")
+end
 
-    -- Revert utility params
-    for _, param_info in ipairs(original_utility_values) do
-        param_info.param:set(param_info.original_value)
-    end
-    gcs:send_text(MAV_SEVERITY.INFO, "Settings reverted to startup values.")
+local function save_autotune()
+    save_param_group(autotune_params)
+    original_autotune = capture_baseline(autotune_params)
+    gcs:send_text(MAV_SEVERITY.INFO, "Autotune settings saved.")
+end
 
-    -- Manually reset the menu items' internal state to the default value.
-    if roll_gain_item then roll_gain_item.current_idx = default_gain_idx end
-    if pitch_gain_item then pitch_gain_item.current_idx = default_gain_idx end
-    if yaw_gain_item then yaw_gain_item.current_idx = default_gain_idx end
-
-    -- After reverting the underlying params, sync the menu display to match
+local function revert_autotune()
+    revert_param_group(original_autotune)
     sync_menu_selections_to_params()
+    gcs:send_text(MAV_SEVERITY.INFO, "Autotune settings reverted.")
+end
+
+local function save_logging()
+    save_param_group(logging_params)
+    original_logging = capture_baseline(logging_params)
+    gcs:send_text(MAV_SEVERITY.INFO, "Logging settings saved.")
+end
+
+local function revert_logging()
+    revert_param_group(original_logging)
+    sync_menu_selections_to_params()
+    gcs:send_text(MAV_SEVERITY.INFO, "Logging settings reverted.")
+end
+
+-- Convenience commands that act on every area at once.
+local function save_all_settings()
+    for _, gains in pairs(axis_gains) do
+        for _, gain_info in ipairs(gains) do
+            gain_info.param:set_and_save(gain_info.param:get())
+        end
+    end
+    save_param_group(autotune_params)
+    save_param_group(logging_params)
+    populate_original_values() -- all saved values become the new baseline
+    reset_gain_selectors()
+    gcs:send_text(MAV_SEVERITY.INFO, "All settings saved.")
+end
+
+local function revert_all_settings()
+    for _, gains in pairs(original_gains) do
+        for _, gain_info in ipairs(gains) do
+            gain_info.param:set(gain_info.original_value)
+        end
+    end
+    revert_param_group(original_autotune)
+    revert_param_group(original_logging)
+    reset_gain_selectors()
+    sync_menu_selections_to_params()
+    gcs:send_text(MAV_SEVERITY.INFO, "All settings reverted.")
 end
 
 -- ####################
@@ -461,6 +518,30 @@ local menu_definition = {
                     options = {"Soft Tune", "Firm Tune"},
                     default = 1, -- 1-based index for "Soft Tune"
                     callback = on_backoff_change
+                },
+                {
+                    type = 'COMMAND',
+                    name = "Save Autotune",
+                    info = "Confirm Save (Permanent)?",
+                    callback = function(command_action)
+                        if command_action == CRSF_COMMAND_STATUS.START then
+                            save_autotune()
+                            return CRSF_COMMAND_STATUS.READY, "Saved!"
+                        end
+                        return CRSF_COMMAND_STATUS.READY, "Confirm Save (Permanent)?"
+                    end
+                },
+                {
+                    type = 'COMMAND',
+                    name = "Revert Autotune",
+                    info = "Confirm Revert?",
+                    callback = function(command_action)
+                        if command_action == CRSF_COMMAND_STATUS.START then
+                            revert_autotune()
+                            return CRSF_COMMAND_STATUS.READY, "Reverted!"
+                        end
+                        return CRSF_COMMAND_STATUS.READY, "Confirm Revert?"
+                    end
                 }
             }
         },
@@ -490,6 +571,30 @@ local menu_definition = {
                     default = 1, -- 1-based index for "Off"
                     callback = on_replay_log_change
                 },
+                {
+                    type = 'COMMAND',
+                    name = "Save Logging",
+                    info = "Confirm Save (Permanent)?",
+                    callback = function(command_action)
+                        if command_action == CRSF_COMMAND_STATUS.START then
+                            save_logging()
+                            return CRSF_COMMAND_STATUS.READY, "Saved!"
+                        end
+                        return CRSF_COMMAND_STATUS.READY, "Confirm Save (Permanent)?"
+                    end
+                },
+                {
+                    type = 'COMMAND',
+                    name = "Revert Logging",
+                    info = "Confirm Revert?",
+                    callback = function(command_action)
+                        if command_action == CRSF_COMMAND_STATUS.START then
+                            revert_logging()
+                            return CRSF_COMMAND_STATUS.READY, "Reverted!"
+                        end
+                        return CRSF_COMMAND_STATUS.READY, "Confirm Revert?"
+                    end
+                },
                 {type = 'INFO', name = "Warning", info = "Erase is final"},
                 {
                     type = 'COMMAND',
@@ -506,14 +611,14 @@ local menu_definition = {
                 },
             }
         },
-        -- ====== SAVE & REVERT COMMANDS ======
+        -- ====== GAIN SAVE & REVERT (top-level gains) ======
         {
             type = 'COMMAND',
-            name = "Save Settings",
+            name = "Save Gains",
             info = "Confirm Save (Permanent)?",
             callback = function(command_action)
                 if command_action == CRSF_COMMAND_STATUS.START then
-                    save_all_settings()
+                    save_gains()
                     return CRSF_COMMAND_STATUS.READY, "Saved!"
                 end
                 -- Default state text
@@ -522,14 +627,40 @@ local menu_definition = {
         },
         {
             type = 'COMMAND',
-            name = "Revert Settings",
+            name = "Revert Gains",
+            info = "Confirm Revert?",
+            callback = function(command_action)
+                if command_action == CRSF_COMMAND_STATUS.START then
+                    revert_gains()
+                    return CRSF_COMMAND_STATUS.READY, "Reverted!"
+                end
+                -- Default state text
+                return CRSF_COMMAND_STATUS.READY, "Confirm Revert?"
+            end
+        },
+
+        -- ====== SAVE & REVERT EVERY AREA ======
+        {
+            type = 'COMMAND',
+            name = "Save All",
+            info = "Confirm Save (Permanent)?",
+            callback = function(command_action)
+                if command_action == CRSF_COMMAND_STATUS.START then
+                    save_all_settings()
+                    return CRSF_COMMAND_STATUS.READY, "Saved!"
+                end
+                return CRSF_COMMAND_STATUS.READY, "Confirm Save (Permanent)?"
+            end
+        },
+        {
+            type = 'COMMAND',
+            name = "Revert All",
             info = "Confirm Revert?",
             callback = function(command_action)
                 if command_action == CRSF_COMMAND_STATUS.START then
                     revert_all_settings()
                     return CRSF_COMMAND_STATUS.READY, "Reverted!"
                 end
-                -- Default state text
                 return CRSF_COMMAND_STATUS.READY, "Confirm Revert?"
             end
         },
