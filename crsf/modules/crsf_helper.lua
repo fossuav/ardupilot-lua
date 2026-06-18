@@ -50,7 +50,8 @@ local function create_selection_entry(name, options_table, current_idx, unit)
     local max_val = #options_table - 1
     -- The 4th argument is the current value. The 7th is the default value.
     -- For our purposes, we'll pack the current value into both slots.
-    return string.pack(">BzzBBBBz", CRSF_PARAM_TYPE.TEXT_SELECTION, name, options_str, zero_based_idx, min_val, max_val, zero_based_idx, unit or "")
+    return string.pack(">BzzBBBBz", CRSF_PARAM_TYPE.TEXT_SELECTION, name, options_str,
+        zero_based_idx, min_val, max_val, zero_based_idx, unit or "")
 end
 
 -- Creates a CRSF menu number item (as float)
@@ -62,7 +63,8 @@ local function create_number_entry(name, value, min, max, default, dpoint, step,
     local packed_max = math.floor(max * scale + 0.5)
     local packed_default = math.floor(default * scale + 0.5)
     local packed_step = math.floor(step * scale + 0.5)
-    return string.pack(">BzllllBlz", CRSF_PARAM_TYPE.FLOAT, name, packed_value, packed_min, packed_max, packed_default, dpoint or 0, packed_step, unit or "")
+    return string.pack(">BzllllBlz", CRSF_PARAM_TYPE.FLOAT, name, packed_value, packed_min,
+        packed_max, packed_default, dpoint or 0, packed_step, unit or "")
 end
 
 -- Creates a CRSF menu info item
@@ -90,7 +92,7 @@ local function parse_menu(menu_definition, parent_menu_obj)
 
     for _, item_def in ipairs(menu_definition.items) do
         local param_obj = nil
-        local packed_data = nil
+        local packed_data
 
         if item_def.type == 'MENU' then
             param_obj = parent_menu_obj:add_menu(item_def.name)
@@ -107,7 +109,8 @@ local function parse_menu(menu_definition, parent_menu_obj)
 
         elseif item_def.type == 'NUMBER' then
             item_def.current_val = item_def.default -- Store the initial value
-            packed_data = create_number_entry(item_def.name, item_def.current_val, item_def.min, item_def.max, item_def.default, item_def.dpoint, item_def.step, item_def.unit)
+            packed_data = create_number_entry(item_def.name, item_def.current_val, item_def.min,
+                item_def.max, item_def.default, item_def.dpoint, item_def.step, item_def.unit)
             param_obj = parent_menu_obj:add_parameter(packed_data)
 
         elseif item_def.type == 'COMMAND' then
@@ -186,7 +189,8 @@ local function event_loop()
     -- Handle a READ request from the transmitter first.
     if (events & CRSF_EVENT.PARAMETER_READ) ~= 0 then
         if item_def.type == 'SELECTION' then
-            local packed_data = create_selection_entry(item_def.name, item_def.options, item_def.current_idx, item_def.unit)
+            local packed_data = create_selection_entry(item_def.name, item_def.options,
+                item_def.current_idx, item_def.unit)
             crsf:send_write_response(packed_data)
         elseif item_def.type == 'COMMAND' then
             -- Respond with the command's *current* state
@@ -197,7 +201,8 @@ local function event_loop()
             crsf:send_write_response(packed_data)
         elseif item_def.type == 'NUMBER' then
             -- Respond with the number's *current* state
-            local packed_data = create_number_entry(item_def.name, item_def.current_val, item_def.min, item_def.max, item_def.default, item_def.dpoint, item_def.step, item_def.unit)
+            local packed_data = create_number_entry(item_def.name, item_def.current_val, item_def.min,
+                item_def.max, item_def.default, item_def.dpoint, item_def.step, item_def.unit)
             crsf:send_write_response(packed_data)
         else
             -- Send generic response if type not handled explicitly for read
@@ -256,7 +261,8 @@ local function event_loop()
             local success, ret_status, ret_info = pcall(item_def.callback, new_value)
 
             if not success then
-                gcs:send_text(MAV_SEVERITY.ERROR, "CRSF Callback Err: " .. tostring(ret_status)) -- ret_status holds error msg on failure
+                -- ret_status holds error msg on failure
+                gcs:send_text(MAV_SEVERITY.ERROR, "CRSF Callback Err: " .. tostring(ret_status))
                 if item_def.type == 'COMMAND' then
                     -- Reset command to READY on error
                     item_def.status = CRSF_COMMAND_STATUS.READY
@@ -324,7 +330,8 @@ function helper.register_menu(menu_definition)
         parse_menu(menu_definition, top_level_menu_obj)
         gcs:send_text(MAV_SEVERITY.INFO, "CRSF: Built menu '" .. menu_definition.name .. "'")
     else
-        gcs:send_text(MAV_SEVERITY.WARNING, "CRSF: Failed to create top-level menu for '" .. menu_definition.name .. "'")
+        gcs:send_text(MAV_SEVERITY.WARNING,
+            "CRSF: Failed to create top-level menu for '" .. menu_definition.name .. "'")
         return -- Do not start the event loop if the menu could not be created
     end
 

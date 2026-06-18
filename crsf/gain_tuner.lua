@@ -65,7 +65,6 @@ local utility_params = {
 -- Table to store the original parameter values on script startup (or after save) for the revert/baseline function
 local original_gains = {}
 local original_utility_values = {}
-local origin_log_bitmask = {}
 
 -- Populate the original value tables for all managed parameters.
 local function populate_original_values()
@@ -183,7 +182,7 @@ local function on_axis_gain_change(axis_name, selection)
     -- Send a confirmation message to the GCS for the entire axis
     local gcs_message = string.format("%s Gains(%s) set to %s", axis_name, gains_to_tune_selection, selection)
     gcs:send_text(MAV_SEVERITY.INFO, gcs_message)
-    
+
     -- Send a detailed feedback message with the new gain values
     local feedback = get_gcs_feedback_for_axis(axis_name)
     if feedback ~= "" then

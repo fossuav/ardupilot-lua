@@ -154,7 +154,7 @@ end
 local function on_acro_mode_change(selection)
     local current_val = acro_options_param:get()
     local new_val
-    
+
     if selection == "Rate" then
         -- Set the rate-only bit (bit 1)
         new_val = current_val | RATE_ONLY_BIT
