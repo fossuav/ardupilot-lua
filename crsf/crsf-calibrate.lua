@@ -61,8 +61,10 @@ local function callback_compass_cal(command_action)
         return CRSF_COMMAND_STATUS.READY, "Execute"
     end
 
-    -- Default fallback
-    return CRSF_COMMAND_STATUS.READY, "Execute"
+    -- Any other action (e.g. POLL) must leave the item state untouched: returning
+    -- a status here would collapse the "Accept" prompt back to "Execute" on the
+    -- next poll. Returning nil tells the helper to keep the current status.
+    return nil
 end
 
 --- Explicitly cancels a running compass calibration.
