@@ -31,6 +31,7 @@ Example Usage:
 import argparse
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -40,19 +41,22 @@ from pymavlink.mavftp import MAVFTP, FtpError, DirectoryEntry
 
 
 def maybe_relaunch_under_windows_python(args):
-    """On WSL2, re-exec this script under the host's python.exe for serial uploads.
+    """On WSL2, re-exec this script under the host's python.exe for COM-port uploads.
 
-    WSL2 cannot access Windows COM ports, so a serial connection has to run
-    through the Windows interpreter (the same workaround ArduPilot's firmware
-    uploader uses in Tools/ardupilotwaf/chibios.py). Network connections
-    (udp/tcp) work natively in WSL2 and are left alone -- relaunching one under
-    Windows Python would break it across the WSL2/Windows NAT boundary.
+    WSL2 cannot open Windows COM ports, so a COMx connection has to run through
+    the Windows interpreter (the same workaround ArduPilot's firmware uploader
+    uses in Tools/ardupilotwaf/chibios.py). Linux device paths (e.g. a
+    usbipd-attached /dev/ttyACM0) and network connections (udp/tcp) are reachable
+    from native WSL2 Python and are left alone.
     """
     if "microsoft-standard-WSL2" not in platform.release():
         return
     if os.environ.get("UPDATE_SCRIPTS_WSL2_RELAUNCHED"):
         return
-    if args.connect.lower().startswith(("udp", "tcp")):
+    # Only a Windows COM port needs the Windows interpreter. A /dev/tty* path or a
+    # udp:/tcp: transport works from native WSL2 Python, and Windows Python could
+    # not open those anyway, so do not relaunch for them.
+    if not re.match(r'com\d+', args.connect.strip().lower()):
         return
 
     try:
@@ -60,10 +64,21 @@ def maybe_relaunch_under_windows_python(args):
     except (subprocess.CalledProcessError, FileNotFoundError):
         where_python = ""
     if "python.exe" not in where_python:
-        print("WSL2 detected but Windows python.exe was not found on PATH.")
-        print("Serial uploads need it to reach the COM port. Install Windows Python")
-        print("with 'pip.exe install pymavlink', or connect over UDP/TCP instead.")
-        return
+        print("WSL2 cannot open a COM port, and Windows python.exe was not found on PATH.")
+        print("Install Windows Python (added to PATH), then: pip.exe install pymavlink")
+        sys.exit(1)
+
+    # The upload runs under Windows Python, which needs its own pymavlink; WSL2's
+    # copy cannot open a Windows COM port.
+    try:
+        subprocess.check_output(["python.exe", "-c", "import pymavlink"],
+                                stderr=subprocess.STDOUT, text=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Windows python.exe is missing the pymavlink module needed for COM-port")
+        print("uploads. Install it on the Windows side with:")
+        print("    pip.exe install pymavlink")
+        print("Or attach the device to WSL2 with usbipd and connect via /dev/ttyACM0.")
+        sys.exit(1)
 
     def to_windows_path(path):
         try:
@@ -78,7 +93,7 @@ def maybe_relaunch_under_windows_python(args):
     if args.restart:
         cmd.append("--restart")
 
-    print("WSL2 serial upload: relaunching via Windows python.exe for COM port access...")
+    print("WSL2 COM-port upload: relaunching via Windows python.exe for port access...")
     env = dict(os.environ, UPDATE_SCRIPTS_WSL2_RELAUNCHED="1")
     sys.exit(subprocess.call(cmd, env=env))
 
