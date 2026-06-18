@@ -30,11 +30,57 @@ Example Usage:
 
 import argparse
 import os
+import platform
+import subprocess
 import sys
 import time
 import traceback
 from pymavlink import mavutil
 from pymavlink.mavftp import MAVFTP, FtpError, DirectoryEntry
+
+
+def maybe_relaunch_under_windows_python(args):
+    """On WSL2, re-exec this script under the host's python.exe for serial uploads.
+
+    WSL2 cannot access Windows COM ports, so a serial connection has to run
+    through the Windows interpreter (the same workaround ArduPilot's firmware
+    uploader uses in Tools/ardupilotwaf/chibios.py). Network connections
+    (udp/tcp) work natively in WSL2 and are left alone -- relaunching one under
+    Windows Python would break it across the WSL2/Windows NAT boundary.
+    """
+    if "microsoft-standard-WSL2" not in platform.release():
+        return
+    if os.environ.get("UPDATE_SCRIPTS_WSL2_RELAUNCHED"):
+        return
+    if args.connect.lower().startswith(("udp", "tcp")):
+        return
+
+    try:
+        where_python = subprocess.check_output(["where.exe", "python.exe"], text=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        where_python = ""
+    if "python.exe" not in where_python:
+        print("WSL2 detected but Windows python.exe was not found on PATH.")
+        print("Serial uploads need it to reach the COM port. Install Windows Python")
+        print("with 'pip.exe install pymavlink', or connect over UDP/TCP instead.")
+        return
+
+    def to_windows_path(path):
+        try:
+            return subprocess.check_output(["wslpath", "-w", os.path.abspath(path)], text=True).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return os.path.abspath(path)
+
+    cmd = ["python.exe", "-u", to_windows_path(__file__),
+           "--connect", args.connect, to_windows_path(args.source_directory)]
+    if args.verbose:
+        cmd.append("--verbose")
+    if args.restart:
+        cmd.append("--restart")
+
+    print("WSL2 serial upload: relaunching via Windows python.exe for COM port access...")
+    env = dict(os.environ, UPDATE_SCRIPTS_WSL2_RELAUNCHED="1")
+    sys.exit(subprocess.call(cmd, env=env))
 
 def ensure_remote_dir(ftp: MAVFTP, remote_path: str, verbose: bool = False):
     """
@@ -233,6 +279,7 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output.")
     parser.add_argument("--restart", action="store_true", help="Restart scripting engine on successful upload.")
     args = parser.parse_args()
+    maybe_relaunch_under_windows_python(args)
     sync_directory(args.connect, args.source_directory, args.verbose, args.restart)
 
 if __name__ == "__main__":
