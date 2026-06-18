@@ -54,7 +54,6 @@ local logging_params = {
     assert(Parameter('LOG_BITMASK'), "Failed to find LOG_BITMASK"),
     assert(Parameter('LOG_REPLAY'), "Failed to find LOG_REPLAY"),
     assert(Parameter('LOG_DISARMED'), "Failed to find LOG_DISARMED"),
-    assert(Parameter('LOG_FILE_DSRMROT'), "Failed to find LOG_FILE_DSRMROT"),
 }
 local autotune_params = {
     assert(Parameter('AUTOTUNE_AGGR'), "Failed to find AUTOTUNE_AGGR"),
@@ -317,46 +316,48 @@ local function toggle_batch_logging(enable)
     end
 end
 
--- Enables or disables fast attitude logging by modifying LOG_BITMASK
-local function toggle_fast_attitude_logging(enable)
+-- Sets or clears the fast attitude logging bit (LOG_BITMASK bit 0).
+local function set_fast_attitude(enable)
     local log_bitmask = Parameter('LOG_BITMASK')
     local current_val = log_bitmask:get()
     if enable then
-        if current_val % 2 == 0 then -- It's even, so add 1 to make it odd
-            log_bitmask:set(current_val + 1)
-            gcs:send_text(MAV_SEVERITY.INFO, "Fast attitude logging enabled.")
-        else
-            gcs:send_text(MAV_SEVERITY.INFO, "Fast attitude logging already enabled.")
-        end
+        log_bitmask:set(current_val | 1)
     else
-        if current_val % 2 ~= 0 then -- It's odd, so subtract 1 to make it even
-            log_bitmask:set(current_val - 1)
-            gcs:send_text(MAV_SEVERITY.INFO, "Fast attitude logging disabled.")
-        else
-            gcs:send_text(MAV_SEVERITY.INFO, "Fast attitude logging already disabled.")
-        end
+        log_bitmask:set(current_val & (~1))
     end
 end
 
--- Callback for the replay Log on/off selection
-local function on_replay_log_change(selection)
+-- Returns the 1-based Log Mode index for the current parameter state.
+-- 1 = Normal, 2 = Fast Attitude, 3 = Replay
+local function get_log_mode_idx()
+    if Parameter('LOG_REPLAY'):get() == 1 then
+        return 3 -- Replay
+    end
+    if Parameter('LOG_BITMASK'):get() % 2 ~= 0 then
+        return 2 -- Fast Attitude (bit 0 set)
+    end
+    return 1 -- Normal
+end
+
+-- Callback for the Log Mode selection. The three modes are mutually exclusive.
+local function on_log_mode_change(selection)
     local log_replay = Parameter('LOG_REPLAY')
     local log_disarmed = Parameter('LOG_DISARMED')
-    local log_bitmask = Parameter('LOG_BITMASK')
-    local log_rot = Parameter('LOG_FILE_DSRMROT')
-    local current_val = log_bitmask:get()
-    if selection == "On" then
-        log_disarmed:set(2)
-        log_rot:set(0)
-        log_bitmask:set(current_val & (~1))
+    if selection == "Replay" then
         log_replay:set(1)
-        gcs:send_text(MAV_SEVERITY.INFO, "Replay logging enabled.")
-    elseif selection == "Off" then
-        log_disarmed:set(0)
-        log_rot:set(1)
-        log_bitmask:set(current_val | 1)
+        log_disarmed:set(2)
+        set_fast_attitude(false)
+        gcs:send_text(MAV_SEVERITY.INFO, "Log mode: Replay")
+    elseif selection == "Fast Attitude" then
         log_replay:set(0)
-        gcs:send_text(MAV_SEVERITY.INFO, "Replay logging disabled.")
+        log_disarmed:set(0)
+        set_fast_attitude(true)
+        gcs:send_text(MAV_SEVERITY.INFO, "Log mode: Fast Attitude")
+    else -- "Normal"
+        log_replay:set(0)
+        log_disarmed:set(0)
+        set_fast_attitude(false)
+        gcs:send_text(MAV_SEVERITY.INFO, "Log mode: Normal")
     end
 end
 
@@ -391,15 +392,6 @@ local function on_backoff_change(selection)
     elseif selection == "Firm Tune" then
         autotune_gmbk:set(0.1)
         gcs:send_text(MAV_SEVERITY.INFO, "Autotune Backoff set to 0.1 (Firm).")
-    end
-end
-
--- Callback for the Fast Attitude Log on/off selection
-local function on_fast_att_log_change(selection)
-    if selection == "On" then
-        toggle_fast_attitude_logging(true)
-    elseif selection == "Off" then
-        toggle_fast_attitude_logging(false)
     end
 end
 
@@ -559,17 +551,10 @@ local menu_definition = {
                 },
                 {
                     type = 'SELECTION',
-                    name = "Fast Attitude Log",
-                    options = {"Off", "On"},
-                    default = 1, -- 1-based index for "Off"
-                    callback = on_fast_att_log_change
-                },
-                {
-                    type = 'SELECTION',
-                    name = "Replay Logging",
-                    options = {"Off", "On"},
-                    default = 1, -- 1-based index for "Off"
-                    callback = on_replay_log_change
+                    name = "Log Mode",
+                    options = {"Normal", "Fast Attitude", "Replay"},
+                    default = 1, -- 1-based index for "Normal"
+                    callback = on_log_mode_change
                 },
                 {
                     type = 'COMMAND',
@@ -724,14 +709,9 @@ sync_menu_selections_to_params = function()
             end
         end
 
-        local fast_log_selection = find_item_by_name(logging_menu.items, "Fast Attitude Log")
-        if fast_log_selection then
-            local log_bitmask_param = assert(Parameter('LOG_BITMASK'), "LOG_BITMASK param not found")
-            if log_bitmask_param:get() % 2 ~= 0 then
-                fast_log_selection.current_idx = 2 -- "On"
-            else
-                fast_log_selection.current_idx = 1 -- "Off"
-            end
+        local log_mode_selection = find_item_by_name(logging_menu.items, "Log Mode")
+        if log_mode_selection then
+            log_mode_selection.current_idx = get_log_mode_idx()
         end
     end
 end
@@ -776,14 +756,9 @@ local function initialize_menu_defaults()
             end
         end
 
-        local fast_log_selection = find_item_by_name(logging_menu.items, "Fast Attitude Log")
-        if fast_log_selection then
-            local log_bitmask_param = assert(Parameter('LOG_BITMASK'), "LOG_BITMASK param not found")
-            if log_bitmask_param:get() % 2 ~= 0 then
-                fast_log_selection.default = 2 -- "On"
-            else
-                fast_log_selection.default = 1 -- "Off"
-            end
+        local log_mode_selection = find_item_by_name(logging_menu.items, "Log Mode")
+        if log_mode_selection then
+            log_mode_selection.default = get_log_mode_idx()
         end
     end
 end
